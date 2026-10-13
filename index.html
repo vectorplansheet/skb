@@ -176,10 +176,21 @@ const TYPE_LABELS = [
   [/Герань-[345]/, 'реакт.уд.дрон'],
   [/Искандер/,     'бал.ракета'],
   [/Циркон/,       'гиперзв.ракета'],
-  [/Х-101|Х-59|Калибр|Бандероль/, 'крыл.ракета'],
+  [/Бандероль/,    'бандероль'],
+  [/Х-101|Х-59|Калибр/, 'крыл.ракета'],
   [/Су-34/,        'Су-34'],
   [/КАБ/,          'КАБ']
 ];
+const targetCat = st => {
+  const l = st.label || '', t = st.type || '';
+  if (l === 'бандероль' || l === 'крыл.ракета') return 'cruise';
+  if (l === 'бал.ракета' || /Искандер/.test(t)) return 'ballistic';
+  if (l === 'реакт.уд.дрон') return 'jet';
+  if (l === 'уд.дрон' || l === 'дрон-имит.' || /Герань-2|Гербера/.test(t)) return 'drone';
+  if (/^(Су-34|Су-30|Су-35)$/.test(l)) return 'avia';
+  return '';
+};
+const hiddenCats = {};
 const typeLabel = t => { const h = TYPE_LABELS.find(([re]) => re.test(t || '')); return h ? h[1] : (t || 'цель'); };
 
 // ---------- квалификация цели по скорости (перенесена из index1.html, порядок и диапазоны те же) ----------
@@ -239,6 +250,7 @@ const SPEED_CLASSES = [
 ];
 // скорость → тип; если ни один диапазон не подошёл — берём тип по названию из панели
 function classifyTarget(type, speed) {
+  if (/Бандероль/.test(type || '')) return 'бандероль';   // подпись по названию, а не по скорости
   const sp = Number(speed) || 0;
   const h = SPEED_CLASSES.find(([lo, hi]) => sp >= lo && sp <= hi);
   if (h) return typeof h[2] === 'function' ? h[2]() : h[2];
@@ -451,7 +463,7 @@ function spawnTarget(o) {
     launchAtMs: o.launchAtMs, editTs: 0,
     kab: !!o.kabStart, kabStart: o.kabStart || 0,
     lblName: null, lblKey: '', removeTimer: null,
-    feature: { type: 'Feature', properties: { key: o.key, heading: 0, lbl: '', ico: label === 'Су-34' ? 'arrow-su34' : 'arrow' }, geometry: { type: 'Point', coordinates: [o.spawn[1], o.spawn[0]] } },
+    feature: { type: 'Feature', properties: { key: o.key, heading: 0, lbl: '', ico: 'arrow' }, geometry: { type: 'Point', coordinates: [o.spawn[1], o.spawn[0]] } },
     trail: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [[o.spawn[1], o.spawn[0]], [o.spawn[1], o.spawn[0]]] } }
   };
   states.set(o.key, st);
@@ -554,7 +566,7 @@ const tickMs = () => states.size > 400 ? 500 : states.size > 150 ? 250 : 100;
 function flushTargets() {
   dirtyT = false;
   const feats = [], trails = [];
-  for (const st of states.values()) { feats.push(st.feature); trails.push(st.trail); }
+  for (const st of states.values()) { if (hiddenCats[targetCat(st)]) continue; feats.push(st.feature); trails.push(st.trail); }
   setData('targets', feats);
   setData('trails', trails);
 }
@@ -725,7 +737,6 @@ db.ref('.info/connected').on('value', s => {
 map.on('load', async () => {
   try { await Promise.all([document.fonts.load('800 12px Manrope'), document.fonts.ready]); } catch (e) {}
   map.addImage('arrow', makeArrowImage(), { pixelRatio: 2 });
-  map.addImage('arrow-su34', makeSu34Image(), { pixelRatio: 2 });
   mapReady = true;
   tick();
 });
@@ -942,40 +953,84 @@ map.on('load', async () => {
 
 /* ---------- кнопка настроек отображения (справа внизу, выше кнопок зума) ---------- */
 (function () {
-  const OPTS = [
-    { key: 'red',   on: 'Убрать вражеские формуляры',      off: 'Показать вражеские формуляры',      layers: ['labels'] },
-    { key: 'blue',  on: 'Убрать дружественные формуляры',  off: 'Показать дружественные формуляры',  layers: ['fr-labels'] },
-    { key: 'route', on: 'Убрать маршруты',                 off: 'Показать маршруты',                 layers: ['trail-line', 'sel-line', 'sel-pts', 'fr-trail'] }
+  // key — ключ состояния; layers — слои карты, которые скрываются; cat — категория целей (см. targetCat)
+  const GROUPS = [
+    { title: 'Отображение', items: [
+      { key: 'red',   label: 'Вражеские формуляры',     layers: ['labels'] },
+      { key: 'blue',  label: 'Дружественные формуляры', layers: ['fr-labels'] },
+      { key: 'route', label: 'Маршруты и следы',        layers: ['trail-line', 'sel-line', 'sel-pts', 'fr-trail'] }
+    ] },
+    { title: 'Типы целей', items: [
+      { key: 'c_drone',  cat: 'drone',     label: 'Уд. дроны' },
+      { key: 'c_jet',    cat: 'jet',       label: 'Реактивные' },
+      { key: 'c_avia',   cat: 'avia',      label: 'Такт. авиация' },
+      { key: 'c_cruise', cat: 'cruise',    label: 'Крылатые ракеты' },
+      { key: 'c_ball',   cat: 'ballistic', label: 'Бал. ракеты' }
+    ] }
   ];
+  const ITEMS = GROUPS.flatMap(g => g.items);
+  const LS_KEY = 'skymap_settings_v1';
   const hidden = {};
+  try { Object.assign(hidden, JSON.parse(localStorage.getItem(LS_KEY)) || {}); } catch (e) {}
+
   const css = document.createElement('style');
   css.textContent = `
     #sbtn { position: fixed; left: 52px; bottom: 28px; z-index: 6; width: 34px; height: 34px; border-radius: 8px; cursor: pointer;
       background: rgba(5, 18, 40, .94); color: #bfe0ff; border: 1px solid rgba(70, 150, 255, .6); font-size: 17px; line-height: 1; }
-    #smenu { position: fixed; left: 10px; bottom: 72px; z-index: 6; padding: 8px; display: none; min-width: 230px;
-      background: rgba(5, 18, 40, .95); border: 1px solid rgba(70, 150, 255, .55); border-radius: 10px; box-shadow: 0 0 22px rgba(60, 150, 255, .3); }
-    #smenu button { display: block; width: 100%; margin: 0 0 6px; padding: 7px 10px; border: 0; border-radius: 6px; cursor: pointer; text-align: left;
-      background: #1c4f96; color: #fff; font: 700 12px 'Manrope', Arial, sans-serif; }
-    #smenu button:last-child { margin-bottom: 0; }`;
+    #smenu { position: fixed; left: 10px; bottom: 72px; z-index: 6; padding: 12px 14px 10px; display: none; width: 250px; max-height: 70vh; overflow-y: auto;
+      background: rgba(5, 18, 40, .96); color: #bfe0ff; border: 1px solid rgba(70, 150, 255, .55); border-radius: 12px;
+      box-shadow: 0 0 22px rgba(60, 150, 255, .3); font: 600 13px 'Manrope', Arial, sans-serif; }
+    #smenu .st { color: #e6f3ff; font-size: 15px; font-weight: 800; margin-bottom: 2px; }
+    #smenu .sg { margin: 10px 0 4px; font-size: 10.5px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: #6fa8e8; }
+    #smenu label.si { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 0; cursor: pointer; user-select: none;
+      border-bottom: 1px solid rgba(70, 150, 255, .15); }
+    #smenu label.si:last-of-type { border-bottom: 0; }
+    #smenu label.si:hover span { color: #fff; }
+    #smenu input { display: none; }
+    #smenu .sw { position: relative; flex: none; width: 34px; height: 19px; border-radius: 10px; background: #26354d; transition: background .15s; }
+    #smenu .sw::after { content: ''; position: absolute; top: 2px; left: 2px; width: 15px; height: 15px; border-radius: 50%; background: #8aa0bf; transition: left .15s, background .15s; }
+    #smenu input:checked + .sw { background: #1f6fe0; }
+    #smenu input:checked + .sw::after { left: 17px; background: #fff; }
+    #smenu .sa { display: flex; gap: 6px; margin-top: 10px; }
+    #smenu .sa button { flex: 1; padding: 6px 8px; border: 1px solid rgba(70, 150, 255, .5); border-radius: 6px; cursor: pointer;
+      background: transparent; color: #bfe0ff; font: 700 11.5px 'Manrope', Arial, sans-serif; }
+    #smenu .sa button:hover { background: rgba(70, 150, 255, .2); }`;
   document.head.appendChild(css);
-  const btn = document.createElement('button'); btn.id = 'sbtn'; btn.textContent = '⚙'; document.body.appendChild(btn);
+  const btn = document.createElement('button'); btn.id = 'sbtn'; btn.textContent = '⚙'; btn.title = 'Настройки'; document.body.appendChild(btn);
   const menu = document.createElement('div'); menu.id = 'smenu'; document.body.appendChild(menu);
 
+  menu.innerHTML = '<div class="st">Настройки</div>' + GROUPS.map(g =>
+    `<div class="sg">${g.title}</div>` + g.items.map(o =>
+      `<label class="si"><span>${o.label}</span><input type="checkbox" data-k="${o.key}"><i class="sw"></i></label>`).join('')
+  ).join('') + '<div class="sa"><button data-all="1">Показать всё</button><button data-all="0">Скрыть типы</button></div>';
+  const boxes = {};
+  menu.querySelectorAll('input[data-k]').forEach(i => { boxes[i.dataset.k] = i; });
+
   function apply() {
-    OPTS.forEach(o => o.layers.forEach(id => { if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', hidden[o.key] ? 'none' : 'visible'); }));
-    menu.querySelectorAll('button').forEach((b, i) => b.textContent = hidden[OPTS[i].key] ? OPTS[i].off : OPTS[i].on);
+    ITEMS.forEach(o => {
+      const on = !hidden[o.key];                    // галочка = показывать
+      boxes[o.key].checked = on;
+      (o.layers || []).forEach(id => { if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none'); });
+      if (o.cat) hiddenCats[o.cat] = !on;
+    });
+    dirtyT = true;   // перерисовать цели с учётом фильтра
+    try { localStorage.setItem(LS_KEY, JSON.stringify(hidden)); } catch (e) {}
   }
-  OPTS.forEach(o => {
-    const b = document.createElement('button'); b.textContent = o.on;
-    b.onclick = () => { hidden[o.key] = !hidden[o.key]; apply(); };
-    menu.appendChild(b);
+  menu.addEventListener('change', e => { const k = e.target.dataset && e.target.dataset.k; if (k) { hidden[k] = !e.target.checked; apply(); } });
+  menu.querySelectorAll('.sa button').forEach(b => b.onclick = () => {
+    const showAll = b.dataset.all === '1';
+    ITEMS.forEach(o => { if (showAll || o.cat) hidden[o.key] = !showAll; });
+    apply();
   });
+
   btn.onclick = () => {
     const open = menu.style.display !== 'block';
     menu.style.display = open ? 'block' : 'none'; apply();
     if (open) { ['fmenu', 'fcard'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; }); }
   };
   document.getElementById('fbtn').addEventListener('click', () => { menu.style.display = 'none'; });   // меню самолётов закрывает настройки
+  if (map.loaded && map.loaded()) apply(); else map.once('load', apply);   // применить сохранённые настройки при старте
+  setTimeout(apply, 3000);   // слои самолётов добавляются чуть позже — повторно применяем
 })();
 
 /* ---------- кнопка «Информация» (слева снизу): сколько целей уничтожено ---------- */
