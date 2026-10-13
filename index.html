@@ -1098,6 +1098,126 @@ map.on('load', async () => {
   ['fbtn', 'sbtn'].forEach(id => document.getElementById(id).addEventListener('click', () => { menu.style.display = 'none'; }));
   map.on('click', () => { menu.style.display = 'none'; });
 })();
+
+/* ---------- кнопка «Линейка» (слева снизу): замер расстояний по карте ---------- */
+(function () {
+  const pts = [];          // [[lng, lat], ...]
+  const marks = [];        // html-маркеры (точки и подписи отрезков)
+  let active = false, cursorPt = null;
+
+  const css = document.createElement('style');
+  css.textContent = `
+    #rbtn { position: fixed; left: 136px; bottom: 28px; z-index: 6; width: 34px; height: 34px; border-radius: 8px; cursor: pointer;
+      background: rgba(5, 18, 40, .94); color: #bfe0ff; border: 1px solid rgba(70, 150, 255, .6); font-size: 17px; line-height: 1; padding: 0; }
+    #rbtn.on { background: #1f6fe0; border-color: #8fc2ff; }
+    #rmenu { position: fixed; left: 10px; bottom: 72px; z-index: 6; padding: 10px 12px; display: none; min-width: 230px;
+      background: rgba(5, 18, 40, .95); color: #bfe0ff; border: 1px solid rgba(70, 150, 255, .55); border-radius: 10px;
+      box-shadow: 0 0 22px rgba(60, 150, 255, .3); font: 600 13px/1.45 'Manrope', Arial, sans-serif; }
+    #rmenu b.rh { color: #e6f3ff; font-size: 15px; }
+    #rmenu .rsub { opacity: .7; font-size: 11px; margin-bottom: 6px; }
+    #rmenu .rrow { display: flex; justify-content: space-between; gap: 16px; padding: 4px 0; border-bottom: 1px solid rgba(70, 150, 255, .2); }
+    #rmenu .rrow b { color: #fff; }
+    #rmenu .rtot b { color: #ffd84a; font-size: 15px; }
+    #rmenu .rbt { display: flex; gap: 6px; margin-top: 8px; }
+    #rmenu .rbt button { flex: 1; padding: 7px 8px; border: 0; border-radius: 6px; cursor: pointer;
+      background: #1c4f96; color: #fff; font: 700 12px 'Manrope', Arial, sans-serif; }
+    #rmenu .rbt button:hover { background: #2f86ff; }
+    .maplibregl-canvas-container.ruler-on .maplibregl-canvas { cursor: crosshair !important; }
+    .r-dot { width: 11px; height: 11px; border-radius: 50%; background: #ffd84a; border: 2px solid #000; box-sizing: border-box; }
+    .r-lbl { padding: 2px 6px; border-radius: 6px; background: rgba(5, 18, 40, .92); color: #ffd84a; border: 1px solid rgba(255, 216, 74, .6);
+      font: 800 11px 'Manrope', Arial, sans-serif; white-space: nowrap; pointer-events: none; }`;
+  document.head.appendChild(css);
+
+  const btn = document.createElement('button'); btn.id = 'rbtn'; btn.title = 'Линейка';
+  btn.innerHTML = '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:auto">' +
+    '<rect x="2" y="8" width="20" height="8" rx="1.5" transform="rotate(-45 12 12)"/>' +
+    '<path d="M7.5 13.5l1.8 1.8M10.3 10.7l1.8 1.8M13.1 7.9l1.8 1.8"/></svg>'; document.body.appendChild(btn);
+  const menu = document.createElement('div'); menu.id = 'rmenu'; document.body.appendChild(menu);
+  menu.innerHTML =
+    '<b class="rh">Линейка</b><div class="rsub">Кликайте по карте, чтобы ставить точки</div>' +
+    '<div class="rrow rtot"><span>Всего</span><b id="rTot">0 м</b></div>' +
+    '<div class="rrow"><span>Последний отрезок</span><b id="rSeg">—</b></div>' +
+    '<div class="rrow"><span>Азимут</span><b id="rAz">—</b></div>' +
+    '<div class="rrow"><span>До курсора</span><b id="rCur">—</b></div>' +
+    '<div class="rbt"><button id="rUndo">↶ Убрать точку</button><button id="rClear">Очистить</button></div>';
+  const $ = id => document.getElementById(id);
+
+  const fmt = m => m < 1000 ? Math.round(m) + ' м' : (m / 1000).toFixed(m < 100000 ? 2 : 1) + ' км';
+  const P = c => ({ lng: c[0], lat: c[1] });
+
+  function ensureLayers() {
+    if (map.getSource('ruler')) return;
+    map.addSource('ruler', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    map.addLayer({ id: 'ruler-line', type: 'line', source: 'ruler', filter: ['==', ['get', 'k'], 'main'],
+      layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#ffd84a', 'line-width': 2.5 } });
+    map.addLayer({ id: 'ruler-rb', type: 'line', source: 'ruler', filter: ['==', ['get', 'k'], 'rb'],
+      paint: { 'line-color': '#ffd84a', 'line-width': 1.5, 'line-dasharray': [2, 2], 'line-opacity': .8 } });
+  }
+
+  function clearMarks() { marks.forEach(m => m.remove()); marks.length = 0; }
+
+  function draw() {
+    ensureLayers();
+    const feats = [];
+    if (pts.length > 1) feats.push({ type: 'Feature', properties: { k: 'main' }, geometry: { type: 'LineString', coordinates: pts } });
+    if (pts.length && cursorPt) feats.push({ type: 'Feature', properties: { k: 'rb' }, geometry: { type: 'LineString', coordinates: [pts[pts.length - 1], cursorPt] } });
+    const s = map.getSource('ruler'); if (s) s.setData({ type: 'FeatureCollection', features: feats });
+
+    clearMarks();
+    pts.forEach(c => {
+      const el = document.createElement('div'); el.className = 'r-dot';
+      marks.push(new maplibregl.Marker({ element: el }).setLngLat(c).addTo(map));
+    });
+    let total = 0;
+    for (let i = 1; i < pts.length; i++) {
+      const d = distM(P(pts[i - 1]), P(pts[i])); total += d;
+      const el = document.createElement('div'); el.className = 'r-lbl'; el.textContent = fmt(d);
+      marks.push(new maplibregl.Marker({ element: el }).setLngLat([(pts[i - 1][0] + pts[i][0]) / 2, (pts[i - 1][1] + pts[i][1]) / 2]).addTo(map));
+    }
+    $('rTot').textContent = fmt(total);
+    if (pts.length > 1) {
+      const a = P(pts[pts.length - 2]), b = P(pts[pts.length - 1]);
+      $('rSeg').textContent = fmt(distM(a, b));
+      $('rAz').textContent = Math.round(bearingDeg(a, b)) + '°';
+    } else { $('rSeg').textContent = '—'; $('rAz').textContent = '—'; }
+    $('rCur').textContent = (pts.length && cursorPt) ? fmt(distM(P(pts[pts.length - 1]), P(cursorPt))) : '—';
+  }
+
+  function setActive(on) {
+    active = on;
+    btn.classList.toggle('on', on);
+    menu.style.display = on ? 'block' : 'none';
+    map.getCanvasContainer().classList.toggle('ruler-on', on);
+    if (on) {
+      ['fmenu', 'fcard', 'smenu', 'imenu', 'card'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+      if (typeof select === 'function') select(null);
+      draw();
+    } else { pts.length = 0; cursorPt = null; draw(); }
+  }
+
+  btn.onclick = () => setActive(!active);
+  $('rUndo').onclick = () => { pts.pop(); draw(); };
+  $('rClear').onclick = () => { pts.length = 0; cursorPt = null; draw(); };
+  ['fbtn', 'sbtn', 'ibtn'].forEach(id => { const el = document.getElementById(id); if (el) el.addEventListener('click', () => { if (active) setActive(false); }); });
+
+  map.on('click', e => {
+    if (!active) return;
+    pts.push([e.lngLat.lng, e.lngLat.lat]);
+    draw();
+  });
+  map.on('mousemove', e => {
+    if (!active || !pts.length) return;
+    cursorPt = [e.lngLat.lng, e.lngLat.lat];
+    draw();
+  });
+  map.on('mouseout', () => { if (active && cursorPt) { cursorPt = null; draw(); } });
+
+  // в режиме линейки клик по цели не должен выбирать её / открывать карточку
+  if (typeof select === 'function') {
+    const _select = select;
+    window.select = function (key) { return _select(active ? null : key); };
+  }
+})();
 </script>
 </body>
 </html>
