@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>Віраж ППО</title>
+<title>Skymap Belarus</title>
 <meta name="theme-color" content="#0b0b0b">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -477,8 +477,8 @@ function setLabel(st, p, alt) {
   if (k === st.lblKey) return;
   st.lblKey = k;
   const lines = al > 0
-    ? [`${st.id} ${callsign}`, `${st.label} ${al}м`, `${sp}км/г`]
-    : [`${st.id} ${callsign}`, `${st.label} ${sp}км/г`];       // высоты нет — две строки
+    ? [`${st.id} ${callsign}`, `${st.label} ${al}м`, `${sp}км/ч`]
+    : [`${st.id} ${callsign}`, `${st.label} ${sp}км/ч`];       // высоты нет — две строки
   const img = makeLabelImage(lines);
   const name = 'lbl-' + (++imgCounter);
   map.addImage(name, img.data, { pixelRatio: img.dpr });
@@ -613,13 +613,15 @@ function updateSelection(now) {
   card.innerHTML =
     `<b>${st.id} ${escapeHtml(callsign)}</b><br>` +
     `${escapeHtml(st.label)}<br>` +
-    `Скорость: ${Math.round(p.speedKmh || 0)} км/г` + (st.alt > 0 ? ` · Высота: ${Math.round(st.alt)} м` : '') + `<br>` +
+    `Скорость: ${Math.round(p.speedKmh || 0)} км/ч` + (st.alt > 0 ? ` · Высота: ${Math.round(st.alt)} м` : '') + `<br>` +
     `<button id="btnDel">Удалить цель</button>`;
   document.getElementById('btnDel').onclick = () => deleteTarget(st.key);
 }
 const escapeHtml = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 function deleteTarget(key) {
+  const _st = states.get(key);
+  if (_st && window._recordKill) { try { window._recordKill(_st); } catch (e) { console.error('[kills]', e); } }   // учёт в «Информации»
   removeTarget(key);
   try { flushTargets(); } catch (e) { console.error('[delete flush]', e); }   // сразу убираем с карты, не ждём тик
   try {
@@ -732,7 +734,7 @@ map.on('load', async () => {
    НАШИ ИСТРЕБИТЕЛИ (синие): аэродромы → тип → перехват → «коробочка» 20 км
    ===================================================================== */
 (function () {
-  const AF = { 'Лунинец': [52.30, 26.80], 'Барановичи': [53.07, 26.04], 'Мозырь': [52.03, 29.19], 'Мачулищи': [53.78, 27.58], 'Полоцк': [55.49, 28.74] };
+  const AF = { 'Лунинец': [52.27327, 26.78494], 'Барановичи': [53.07, 26.04], 'Мачулищи': [53.78, 27.58], 'Полоцк': [55.60824, 28.68091] };
   const TYPES = { 'F-16AM': { cr: 850, mx: 1150 }, 'МиГ-29': { cr: 850, mx: 1150 }, 'Mirage-2000': { cr: 850, mx: 1200 }, 'Су-27': { cr: 850, mx: 1150 } };
   const PAL = { id: '#bfe0ff', tx: '#8fc4ff', fill: 'rgba(3, 12, 30, .97)', border: 'rgba(40, 110, 190, .9)', glow: 'rgba(60, 150, 255, .6)', sh: 'rgba(90, 160, 255, .55)' };
   const R = Math.PI / 180, MPD = 111320, CRUISE_ALT = 3000;
@@ -793,7 +795,7 @@ map.on('load', async () => {
   }
   function updCard() {
     const el = document.getElementById('fcInfo'); if (!el || !sel) return;
-    el.textContent = targeting ? 'Нажми на цель на карте' : (sel.d ? `${Math.round(sel.d.v * 3.6)} км/г · ${Math.round(sel.d.alt)} м` : '');
+    el.textContent = targeting ? 'Нажми на цель на карте' : (sel.d ? `${Math.round(sel.d.v * 3.6)} км/ч · ${Math.round(sel.d.alt)} м` : '');
   }
 
   /* ---------- создание и команды ---------- */
@@ -907,7 +909,7 @@ map.on('load', async () => {
         const k = Math.round(D.alt / 10) + '|' + Math.round(D.v * 3.6 / 10);
         if (k !== a.lblKey) {
           a.lblKey = k;
-          const img = makeLabelImage([`${a.num} ${a.type}`, `${Math.round(D.v * 3.6 / 10) * 10}км/г ${Math.round(D.alt / 10) * 10}м`], PAL);
+          const img = makeLabelImage([`${a.num} ${a.type}`, `${Math.round(D.v * 3.6 / 10) * 10}км/ч ${Math.round(D.alt / 10) * 10}м`], PAL);
           const name = 'flbl-' + (++fImg); map.addImage(name, img.data, { pixelRatio: img.dpr });
           if (a.lbl) oldImgs.push(a.lbl); a.lbl = name; a.f.properties.lbl = name; airDirty = true;
         }
@@ -974,6 +976,72 @@ map.on('load', async () => {
     if (open) { ['fmenu', 'fcard'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; }); }
   };
   document.getElementById('fbtn').addEventListener('click', () => { menu.style.display = 'none'; });   // меню самолётов закрывает настройки
+})();
+
+/* ---------- кнопка «Информация» (слева снизу): сколько целей уничтожено ---------- */
+(function () {
+  const LS_KEY = 'skymap_kills_v1';
+  let kills = {};
+  try { kills = JSON.parse(localStorage.getItem(LS_KEY)) || {}; } catch (e) {}
+
+  // тип берём из Firebase (поле type цели), но близкие типы считаем вместе
+  const groupName = t => {
+    t = String(t || '');
+    if (/Герань-[45]/.test(t))      return 'Герань-4/5';
+    if (/Герань-2|Гербера/.test(t)) return 'Герань-2 / Гербера';
+    return t.trim();
+  };
+
+  const css = document.createElement('style');
+  css.textContent = `
+    #ibtn { position: fixed; left: 94px; bottom: 28px; z-index: 6; width: 34px; height: 34px; border-radius: 8px; cursor: pointer;
+      background: rgba(5, 18, 40, .94); color: #bfe0ff; border: 1px solid rgba(70, 150, 255, .6); font-size: 17px; line-height: 1; }
+    #imenu { position: fixed; left: 10px; bottom: 72px; z-index: 6; padding: 8px; display: none; min-width: 230px; max-height: 60vh; overflow-y: auto;
+      background: rgba(5, 18, 40, .95); color: #bfe0ff; border: 1px solid rgba(70, 150, 255, .55); border-radius: 10px;
+      box-shadow: 0 0 22px rgba(60, 150, 255, .3); font-size: 13px; line-height: 1.45; }
+    #imenu b.ih { color: #e6f3ff; font-size: 15px; }
+    #imenu .isub { opacity: .7; font-size: 11px; margin-bottom: 6px; }
+    #imenu .irow { display: flex; justify-content: space-between; gap: 16px; padding: 4px 0; border-bottom: 1px solid rgba(70, 150, 255, .2); }
+    #imenu .irow b { color: #fff; }
+    #imenu .itot { border-bottom: 0; margin-top: 2px; font-weight: 800; }
+    #imenu .iempty { padding: 4px 0; opacity: .7; }
+    #imenu button { display: block; width: 100%; margin-top: 8px; padding: 7px 10px; border: 0; border-radius: 6px; cursor: pointer; text-align: left;
+      background: #1c4f96; color: #fff; font: 700 12px 'Manrope', Arial, sans-serif; }`;
+  document.head.appendChild(css);
+
+  const btn = document.createElement('button'); btn.id = 'ibtn'; btn.textContent = 'ℹ'; btn.title = 'Информация'; document.body.appendChild(btn);
+  const menu = document.createElement('div'); menu.id = 'imenu'; document.body.appendChild(menu);
+
+  function render() {
+    const rows = Object.entries(kills).sort((a, b) => b[1] - a[1]);
+    const total = rows.reduce((n, r) => n + r[1], 0);
+    menu.innerHTML = '<b class="ih">Информация</b><div class="isub">Уничтожено целей (вручную и авиацией)</div>' +
+      (rows.length
+        ? rows.map(([n, c]) => `<div class="irow"><span>${escapeHtml(n)}</span><b>${c}</b></div>`).join('') +
+          `<div class="irow itot"><span>Всего</span><span>${total}</span></div>`
+        : '<div class="iempty">Пока ничего не уничтожено</div>') +
+      (rows.length ? '<button id="iReset">Сбросить счётчик</button>' : '');
+    const r = document.getElementById('iReset');
+    if (r) r.onclick = () => { kills = {}; save(); render(); };
+  }
+  function save() { try { localStorage.setItem(LS_KEY, JSON.stringify(kills)); } catch (e) {} }
+
+  // вызывается из deleteTarget() — и при ручном удалении, и когда цель сбита нашим самолётом
+  window._recordKill = st => {
+    const name = groupName(st.type) || st.label || 'Цель';
+    kills[name] = (kills[name] || 0) + 1;
+    save();
+    if (menu.style.display === 'block') render();
+  };
+
+  const closeOthers = () => ['fmenu', 'fcard', 'smenu', 'card'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+  btn.onclick = () => {
+    const open = menu.style.display !== 'block';
+    if (open) { closeOthers(); render(); }
+    menu.style.display = open ? 'block' : 'none';
+  };
+  ['fbtn', 'sbtn'].forEach(id => document.getElementById(id).addEventListener('click', () => { menu.style.display = 'none'; }));
+  map.on('click', () => { menu.style.display = 'none'; });
 })();
 </script>
 </body>
