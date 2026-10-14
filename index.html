@@ -190,6 +190,7 @@ const targetCat = st => {
   if (/^(Су-34|Су-30|Су-35)$/.test(l)) return 'avia';
   return '';
 };
+const TA_TYPES = /^(Су-34|Су-35|Су-57|Су-30)$/;   // борта с иконкой ta.png
 const hiddenCats = {};
 const typeLabel = t => { const h = TYPE_LABELS.find(([re]) => re.test(t || '')); return h ? h[1] : (t || 'цель'); };
 
@@ -507,6 +508,7 @@ function refreshState(st, now, force) {
   c[0] = p.lng; c[1] = p.lat;
   st.feature.properties.heading = p.heading;
   st.feature.properties.spd = p.speedKmh || 0;
+  st.feature.properties.ico = (TA_TYPES.test(st.label) && map.hasImage('ta')) ? 'ta' : 'arrow';   // иконка ta.png для Су-34/35/57/30
   setLabel(st, p, alt);
 
   // след: от старта до текущей позиции
@@ -737,6 +739,15 @@ db.ref('.info/connected').on('value', s => {
 map.on('load', async () => {
   try { await Promise.all([document.fonts.load('800 12px Manrope'), document.fonts.ready]); } catch (e) {}
   map.addImage('arrow', makeArrowImage(), { pixelRatio: 2 });
+  // иконка ta.png (лежит рядом с index.html) — вписываем в квадрат 64×64, как стрелку; нет файла — остаётся стрелка
+  try {
+    const im = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = 'ta.png'; });
+    const S = 64, c = document.createElement('canvas'); c.width = c.height = S;
+    const k = Math.min(S / im.width, S / im.height), w = im.width * k, h = im.height * k;
+    c.getContext('2d').drawImage(im, (S - w) / 2, (S - h) / 2, w, h);
+    map.addImage('ta', c.getContext('2d').getImageData(0, 0, S, S), { pixelRatio: 2 });
+    dirtyT = true;
+  } catch (e) { console.warn('[ta.png] не загрузилась, используется стрелка', e); }
   mapReady = true;
   tick();
 });
