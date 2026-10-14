@@ -190,6 +190,7 @@ const targetCat = st => {
   if (/^(Су-34|Су-30|Су-35)$/.test(l)) return 'avia';
   return '';
 };
+const TA_TYPES = /^(Су-34|Су-35|Су-57|Су-30)$/;   // борта с иконкой ta.png
 const hiddenCats = {};
 const typeLabel = t => { const h = TYPE_LABELS.find(([re]) => re.test(t || '')); return h ? h[1] : (t || 'цель'); };
 
@@ -272,6 +273,7 @@ const map = new maplibregl.Map({
   center: [27.95, 53.7],
   zoom: 6.5,
   maxZoom: 20,
+  dragRotate: false, pitchWithRotate: false, touchPitch: false,   // карту нельзя крутить/наклонять
   attributionControl: { compact: true },
   style: {
     version: 8,
@@ -312,19 +314,22 @@ const map = new maplibregl.Map({
       // стрелки (бело-красные, чёрная обводка)
       { id: 'arrows', type: 'symbol', source: 'targets', layout: {
           'icon-image': ['coalesce', ['get', 'ico'], 'arrow'],
-          'icon-size': 0.85,
+          'icon-size': ['case', ['==', ['get', 'ico'], 'ta'], 1, 0.85],
           'icon-rotate': ['get', 'heading'], 'icon-rotation-alignment': 'map', 'icon-pitch-alignment': 'map',
           'icon-allow-overlap': true, 'icon-ignore-placement': true, 'symbol-z-order': 'source' } },
 
       // формуляр справа от стрелки
       { id: 'labels', type: 'symbol', source: 'targets', layout: {
-          'icon-image': ['get', 'lbl'], 'icon-anchor': 'left', 'icon-offset': [10, 0],
+          'icon-image': ['get', 'lbl'], 'icon-anchor': 'left',
+          'icon-offset': ['case', ['==', ['get', 'ico'], 'ta'], ['literal', [36, 0]], ['literal', [10, 0]]],
           'icon-rotation-alignment': 'viewport', 'icon-pitch-alignment': 'viewport',
           'icon-allow-overlap': true, 'icon-ignore-placement': true, 'symbol-z-order': 'source' } }
     ]
   }
 });
-map.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'bottom-right');
+map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');   // только +/−, без компаса
+map.touchZoomRotate.disableRotation();   // без поворота двумя пальцами
+map.keyboard.disableRotation();          // и с клавиатуры
 map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left');
 
 let mapReady = false;
@@ -507,6 +512,7 @@ function refreshState(st, now, force) {
   c[0] = p.lng; c[1] = p.lat;
   st.feature.properties.heading = p.heading;
   st.feature.properties.spd = p.speedKmh || 0;
+  st.feature.properties.ico = (TA_TYPES.test(st.label) && map.hasImage('ta')) ? 'ta' : 'arrow';   // иконка ta.png для Су-34/35/57/30
   setLabel(st, p, alt);
 
   // след: от старта до текущей позиции
@@ -737,6 +743,15 @@ db.ref('.info/connected').on('value', s => {
 map.on('load', async () => {
   try { await Promise.all([document.fonts.load('800 12px Manrope'), document.fonts.ready]); } catch (e) {}
   map.addImage('arrow', makeArrowImage(), { pixelRatio: 2 });
+  // иконка ta.png (лежит рядом с index.html) — вписываем в квадрат 128×128 (на экране 64 px, у стрелки ~27 px); нет файла — остаётся стрелка
+  try {
+    const im = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = 'ta.png'; });
+    const S = 128, c = document.createElement('canvas'); c.width = c.height = S;
+    const k = Math.min(S / im.width, S / im.height), w = im.width * k, h = im.height * k;
+    c.getContext('2d').drawImage(im, (S - w) / 2, (S - h) / 2, w, h);
+    map.addImage('ta', c.getContext('2d').getImageData(0, 0, S, S), { pixelRatio: 2 });
+    dirtyT = true;
+  } catch (e) { console.warn('[ta.png] не загрузилась, используется стрелка', e); }
   mapReady = true;
   tick();
 });
