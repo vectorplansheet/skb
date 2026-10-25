@@ -192,13 +192,13 @@ const targetCat = st => {
 };
 const TA_TYPES = /^(Су-34|Су-35|Су-57|Су-30)$/;   // борта с иконкой ta.png
 const hiddenCats = {};
-const typeLabel = t => { const h = TYPE_LABELS.find(([re]) => re.test(t || '')); return h ? h[1] : (t || 'цель'); };
+const typeLabel = t => { const h = TYPE_LABELS.find(([re]) => re.test(t || '')); return h ? h[1] : (t || 'другое'); };
 
 // ---------- квалификация цели по скорости (перенесена из index1.html, порядок и диапазоны те же) ----------
 // ключевые типы сохранены: реакт.уд.дрон / уд.дрон / бал.ракета / крыл.ракета
 const SPEED_CLASSES = [
   [120, 121, 'Supercam'],
-  [120.0001, 200, () => Math.random() < 0.3 ? 'цель' : 'уд.дрон'],   // как в index1: 30% «неопознанный», 70% шахед
+  [120.0001, 200, () => Math.random() < 0.3 ? 'другое' : 'уд.дрон'],   // как в index1: 30% «неопознанный», 70% шахед
   [6000, 7999.999, 'бал.ракета'],
   [950, 951, 'крыл.ракета'],          // Калибр
   [1000, 1001, 'крыл.ракета'],        // Х-101
@@ -1060,9 +1060,8 @@ map.on('load', async () => {
 
 /* ---------- кнопка «Информация» (слева снизу): сколько целей уничтожено ---------- */
 (function () {
-  const LS_KEY = 'skymap_kills_v1';
-  let kills = {};
-  try { kills = JSON.parse(localStorage.getItem(LS_KEY)) || {}; } catch (e) {}
+  let kills = {};   // счётчик живёт только в памяти страницы (в localStorage не пишется)
+  try { localStorage.removeItem('skymap_kills_v1'); } catch (e) {}   // убрать ранее сохранённый счётчик
 
   // тип берём из Firebase (поле type цели), но близкие типы считаем вместе
   const groupName = t => {
@@ -1102,15 +1101,13 @@ map.on('load', async () => {
         : '<div class="iempty">Пока ничего не уничтожено</div>') +
       (rows.length ? '<button id="iReset">Сбросить счётчик</button>' : '');
     const r = document.getElementById('iReset');
-    if (r) r.onclick = () => { kills = {}; save(); render(); };
+    if (r) r.onclick = () => { kills = {}; render(); };
   }
-  function save() { try { localStorage.setItem(LS_KEY, JSON.stringify(kills)); } catch (e) {} }
 
   // вызывается из deleteTarget() — и при ручном удалении, и когда цель сбита нашим самолётом
   window._recordKill = st => {
-    const name = groupName(st.type) || st.label || 'Цель';
+    const name = groupName(st.type) || st.label || 'Другое';
     kills[name] = (kills[name] || 0) + 1;
-    save();
     if (menu.style.display === 'block') render();
   };
 
